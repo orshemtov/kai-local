@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:latest
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - net
+
+  dbmate:
+    image: amacneil/dbmate:latest
+    restart: no
+    depends_on:
+      postgres:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      - ./db:/db:ro
+    networks:
+      - net
+    command: ["up"]
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      BOT_TOKEN: ${BOT_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      CHAT_ID: ${CHAT_ID}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_started
+      dbmate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - net
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: always
+    command:
+      - "http"
+      - "--log"
+      - "stdout"
+      - "--log-level"
+      - "info"
+      - "http://backend:8000"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - 4040:4040
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - net
+
+  register-webhook:
+    image: badouralix/curl-jq:latest
+    restart: no
+    depends_on:
+      ngrok:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+    volumes:
+      - ./scripts:/scripts:ro  # Mount scripts directory as read-only
+    networks:
+      - net
+    command: ["/scripts/register-webhook.sh"]
+
+volumes:
+  postgres_data:
+
+networks:
+  net:
+    driver: bridge
